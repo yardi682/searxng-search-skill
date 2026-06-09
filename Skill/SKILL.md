@@ -1,7 +1,6 @@
 ---
 name: privacy-web-search
-description: Search the web privately using SearXNG, a no-tracking meta-search engine that aggregates results from Google, Bing, and others without logging your queries or IP. Use this skill whenever the user asks to search the web, look something up online, find current information, or research a topic.
-homepage: https://github.com/google-ai-edge/gallery/discussions/categories/skills
+description: Search the web privately using SearXNG.
 ---
 
 # Privacy Web Search (SearXNG)
