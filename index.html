@@ -2,136 +2,112 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Privacy Web Search Skill</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SearXNG Privacy Search Skill</title>
 </head>
 <body>
 <script>
   /**
-   * Privacy Web Search Skill for Google AI Edge Gallery
-   * Uses DuckDuckGo's API (no CORS issues, no key needed) as primary,
-   * with a SearXNG fallback for full result lists.
+   * SearXNG Privacy Web Search Skill
+   * Uses public SearXNG instances to search the web without tracking.
+   * No API key required.
+   *
+   * Protocol: Google AI Edge Gallery calls window.ai_edge_gallery_get_result(dataString)
+   * where dataString is a JSON string with: { query: string, num_results?: number }
+   * Returns a JSON string: { result: {...} } or { error: string }
    */
 
-  // Wrap everything in try/catch so errors are always returned, never thrown
-  window.ai_edge_gallery_get_result = async function(dataString) {
-    try {
-      let parsed;
-      try {
-        parsed = (typeof dataString === "string") ? JSON.parse(dataString) : dataString;
-      } catch (e) {
-        return JSON.stringify({ error: "Could not parse input JSON: " + e.message });
-      }
+  // Public SearXNG instances to try in order (fallback chain)
+  const SEARXNG_INSTANCES = [
+    "https://searx.be",
+    "https://search.inetol.net",
+    "https://searx.tiekoetter.com",
+    "https://opnxng.com"
+  ];
 
-      const query = String(parsed.query || "").trim();
-      if (!query) {
-        return JSON.stringify({ error: "No search query provided." });
-      }
+  async function searchSearXNG(query, numResults, instance) {
+    const params = new URLSearchParams({
+      q: query,
+      format: "json",
+      categories: "general",
+      engines: "google,bing,duckduckgo,brave",
+      language: "auto",
+      pageno: "1"
+    });
 
-      const numResults = Math.min(Math.max(parseInt(parsed.num_results) || 5, 1), 10);
+    const url = `${instance}/search?${params.toString()}`;
 
-      // --- Strategy 1: DuckDuckGo Instant Answer API (no CORS, no key) ---
-      try {
-        const ddgUrl = "https://api.duckduckgo.com/?q=" + encodeURIComponent(query) + "&format=json&no_html=1&skip_disambig=1";
-        const ddgRes = await fetch(ddgUrl, { signal: AbortSignal.timeout(6000) });
-        if (ddgRes.ok) {
-          const ddg = await ddgRes.json();
-          const results = [];
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0 (compatible; GemmaSkill/1.0)"
+      },
+      signal: AbortSignal.timeout(8000)
+    });
 
-          // Abstract (main answer)
-          if (ddg.AbstractText) {
-            results.push({
-              title: ddg.Heading || query,
-              url: ddg.AbstractURL || ddg.AbstractSource || "",
-              snippet: ddg.AbstractText
-            });
-          }
-
-          // Related topics
-          if (ddg.RelatedTopics && ddg.RelatedTopics.length > 0) {
-            for (const t of ddg.RelatedTopics) {
-              if (results.length >= numResults) break;
-              if (t.Text && t.FirstURL) {
-                results.push({
-                  title: t.Text.split(" - ")[0] || t.Text.slice(0, 60),
-                  url: t.FirstURL,
-                  snippet: t.Text
-                });
-              }
-            }
-          }
-
-          // Answer (e.g. calculations, conversions)
-          if (ddg.Answer) {
-            results.unshift({
-              title: "Answer",
-              url: "",
-              snippet: ddg.Answer
-            });
-          }
-
-          if (results.length > 0) {
-            return JSON.stringify({
-              result: {
-                query: query,
-                results: results.slice(0, numResults),
-                source: "DuckDuckGo Instant Answers (private, no tracking)"
-              }
-            });
-          }
-        }
-      } catch (e) {
-        // Fall through to next strategy
-      }
-
-      // --- Strategy 2: SearXNG public instances with CORS ---
-      const instances = [
-        "https://searx.be",
-        "https://search.inetol.net",
-        "https://searx.tiekoetter.com",
-        "https://opnxng.com",
-        "https://search.sapti.me"
-      ];
-
-      for (const instance of instances) {
-        try {
-          const url = instance + "/search?q=" + encodeURIComponent(query) + "&format=json&categories=general&pageno=1";
-          const res = await fetch(url, {
-            signal: AbortSignal.timeout(7000),
-            headers: { "Accept": "application/json" }
-          });
-          if (!res.ok) continue;
-          const data = await res.json();
-          if (!data.results || data.results.length === 0) continue;
-
-          const results = data.results.slice(0, numResults).map(r => ({
-            title: (r.title || "").trim(),
-            url: r.url || "",
-            snippet: (r.content || r.description || "").trim().slice(0, 300)
-          })).filter(r => r.title && r.url);
-
-          if (results.length > 0) {
-            return JSON.stringify({
-              result: {
-                query: query,
-                results,
-                source: "SearXNG via " + instance + " (private, no tracking)"
-              }
-            });
-          }
-        } catch (e) {
-          continue;
-        }
-      }
-
-      // --- All strategies failed ---
-      return JSON.stringify({
-        error: "All search sources failed or returned no results for: \"" + query + "\". This may be a temporary network issue — please try again."
-      });
-
-    } catch (outerErr) {
-      // Catch-all so the function never crashes silently
-      return JSON.stringify({ error: "Unexpected error: " + outerErr.message });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} from ${instance}`);
     }
+
+    const data = await response.json();
+
+    if (!data.results || data.results.length === 0) {
+      throw new Error("No results returned");
+    }
+
+    // Normalise results to a clean, compact format
+    const results = data.results
+      .slice(0, numResults)
+      .map(r => ({
+        title: (r.title || "").trim(),
+        url: r.url || "",
+        snippet: (r.content || r.description || "").trim().slice(0, 300)
+      }))
+      .filter(r => r.title && r.url);
+
+    return {
+      query: data.query || query,
+      results,
+      source: `SearXNG via ${instance} (privacy-preserving meta-search)`
+    };
+  }
+
+  /**
+   * Entry point called by AI Edge Gallery.
+   * @param {string} dataString - JSON string with { query, num_results }
+   * @returns {string} JSON string with { result } or { error }
+   */
+  window.ai_edge_gallery_get_result = async function(dataString) {
+    let parsed;
+    try {
+      parsed = JSON.parse(dataString);
+    } catch (e) {
+      return JSON.stringify({ error: "Invalid input: could not parse JSON — " + e.message });
+    }
+
+    const query = (parsed.query || "").trim();
+    if (!query) {
+      return JSON.stringify({ error: "No search query provided." });
+    }
+
+    const numResults = Math.min(Math.max(parseInt(parsed.num_results) || 5, 1), 10);
+
+    // Try each SearXNG instance in order until one works
+    let lastError = null;
+    for (const instance of SEARXNG_INSTANCES) {
+      try {
+        const searchResult = await searchSearXNG(query, numResults, instance);
+        return JSON.stringify({ result: searchResult });
+      } catch (err) {
+        lastError = err.message;
+        // Try next instance
+      }
+    }
+
+    return JSON.stringify({
+      error: `All SearXNG instances failed. Last error: ${lastError}. The public instances may be temporarily rate-limited — please try again in a few minutes.`
+    });
   };
 </script>
 </body>
