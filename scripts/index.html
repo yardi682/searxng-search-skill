@@ -2,109 +2,114 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SearXNG Privacy Search Skill</title>
+  <title>Privacy Web Search Skill</title>
 </head>
 <body>
 <script>
   /**
-   * SearXNG Privacy Web Search Skill
-   * Uses public SearXNG instances to search the web without tracking.
-   * No API key required.
-   *
-   * Protocol: Google AI Edge Gallery calls window.ai_edge_gallery_get_result(dataString)
-   * where dataString is a JSON string with: { query: string, num_results?: number }
-   * Returns a JSON string: { result: {...} } or { error: string }
+   * Privacy Web Search Skill for Google AI Edge Gallery
+   * 1. Queries your self-hosted SearXNG for top results
+   * 2. Fetches the full content of each result page
+   * 3. Strips HTML down to clean readable text
+   * 4. Returns titles, URLs, and full text for the model to summarize
    */
 
-  // Public SearXNG instances to try in order (fallback chain)
-  const SEARXNG_INSTANCES = [
-    "https://my-searxng-pohz.onrender.com"
-  ];
+  const SEARXNG_URL = "https://my-searxng-pohz.onrender.com";
 
-  async function searchSearXNG(query, numResults, instance) {
-    const params = new URLSearchParams({
-      q: query,
-      format: "json",
-      categories: "general",
-      engines: "google,bing,duckduckgo,brave",
-      language: "auto",
-      pageno: "1"
-    });
-
-    const url = `${instance}/search?${params.toString()}`;
-
-    const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        "Accept": "application/json",
-        "User-Agent": "Mozilla/5.0 (compatible; GemmaSkill/1.0)"
-      },
-      signal: AbortSignal.timeout(8000)
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status} from ${instance}`);
-    }
-
-    const data = await response.json();
-
-    if (!data.results || data.results.length === 0) {
-      throw new Error("No results returned");
-    }
-
-    // Normalise results to a clean, compact format
-    const results = data.results
-      .slice(0, numResults)
-      .map(r => ({
-        title: (r.title || "").trim(),
-        url: r.url || "",
-        snippet: (r.content || r.description || "").trim().slice(0, 300)
-      }))
-      .filter(r => r.title && r.url);
-
-    return {
-      query: data.query || query,
-      results,
-      source: `SearXNG via ${instance} (privacy-preserving meta-search)`
-    };
+  // Strip HTML tags and collapse whitespace into clean readable text
+  function extractText(html) {
+    // Remove scripts, styles, nav, footer, header, ads
+    html = html.replace(/<(script|style|nav|footer|header|aside|noscript|iframe)[^>]*>[\s\S]*?<\/\1>/gi, " ");
+    // Remove all remaining tags
+    html = html.replace(/<[^>]+>/g, " ");
+    // Decode common HTML entities
+    html = html.replace(/&nbsp;/g, " ")
+               .replace(/&amp;/g, "&")
+               .replace(/&lt;/g, "<")
+               .replace(/&gt;/g, ">")
+               .replace(/&quot;/g, '"')
+               .replace(/&#39;/g, "'");
+    // Collapse whitespace
+    html = html.replace(/\s+/g, " ").trim();
+    // Return first 1500 chars — enough context without overloading the model
+    return html.slice(0, 1500);
   }
 
-  /**
-   * Entry point called by AI Edge Gallery.
-   * @param {string} dataString - JSON string with { query, num_results }
-   * @returns {string} JSON string with { result } or { error }
-   */
-  window.ai_edge_gallery_get_result = async function(dataString) {
-    let parsed;
+  async function fetchPageContent(url) {
     try {
-      parsed = JSON.parse(dataString);
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(8000),
+        headers: { "Accept": "text/html" }
+      });
+      if (!res.ok) return null;
+      const html = await res.text();
+      return extractText(html);
     } catch (e) {
-      return JSON.stringify({ error: "Invalid input: could not parse JSON — " + e.message });
+      return null;
     }
+  }
 
-    const query = (parsed.query || "").trim();
-    if (!query) {
-      return JSON.stringify({ error: "No search query provided." });
-    }
-
-    const numResults = Math.min(Math.max(parseInt(parsed.num_results) || 5, 1), 10);
-
-    // Try each SearXNG instance in order until one works
-    let lastError = null;
-    for (const instance of SEARXNG_INSTANCES) {
+  window.ai_edge_gallery_get_result = async function(dataString) {
+    try {
+      let parsed;
       try {
-        const searchResult = await searchSearXNG(query, numResults, instance);
-        return JSON.stringify({ result: searchResult });
-      } catch (err) {
-        lastError = err.message;
-        // Try next instance
+        parsed = (typeof dataString === "string") ? JSON.parse(dataString) : dataString;
+      } catch (e) {
+        return JSON.stringify({ error: "Could not parse input JSON: " + e.message });
       }
-    }
 
-    return JSON.stringify({
-      error: `All SearXNG instances failed. Last error: ${lastError}. The public instances may be temporarily rate-limited — please try again in a few minutes.`
-    });
+      const query = String(parsed.query || "").trim();
+      if (!query) {
+        return JSON.stringify({ error: "No search query provided." });
+      }
+
+      const numResults = Math.min(Math.max(parseInt(parsed.num_results) || 5, 1), 5);
+
+      // Step 1: Get top results from SearXNG
+      let searchResults;
+      try {
+        const searchUrl = SEARXNG_URL + "/search?q=" + encodeURIComponent(query) + "&format=json&categories=general&pageno=1";
+        const res = await fetch(searchUrl, {
+          signal: AbortSignal.timeout(10000),
+          headers: { "Accept": "application/json" }
+        });
+        if (!res.ok) {
+          return JSON.stringify({ error: "SearXNG returned HTTP " + res.status + ". Is the server running?" });
+        }
+        const data = await res.json();
+        if (!data.results || data.results.length === 0) {
+          return JSON.stringify({ error: "No results found for: \"" + query + "\"" });
+        }
+        searchResults = data.results.slice(0, numResults);
+      } catch (e) {
+        return JSON.stringify({ error: "Could not reach SearXNG: " + e.message });
+      }
+
+      // Step 2: Fetch full content of each result page in parallel
+      const enriched = await Promise.all(
+        searchResults.map(async (r) => {
+          const fullText = await fetchPageContent(r.url);
+          return {
+            title: (r.title || "").trim(),
+            url: r.url || "",
+            snippet: (r.content || r.description || "").trim().slice(0, 300),
+            full_text: fullText || "(Could not fetch page content)"
+          };
+        })
+      );
+
+      return JSON.stringify({
+        result: {
+          query: query,
+          results: enriched,
+          source: "SearXNG (self-hosted, private)",
+          instruction: "Please summarize the key findings from these search results. For each result, read the full_text field. Write a coherent summary of 3-5 sentences answering the user's query, then list the sources."
+        }
+      });
+
+    } catch (outerErr) {
+      return JSON.stringify({ error: "Unexpected error: " + outerErr.message });
+    }
   };
 </script>
 </body>
