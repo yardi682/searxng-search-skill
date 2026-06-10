@@ -1,74 +1,54 @@
 ---
 name: privacy-web-search
-description: Search the web privately using SearXNG, a no-tracking meta-search engine that aggregates results from Google, Bing, and others without logging your queries or IP. Use this skill whenever the user asks to search the web, look something up online, find current information, or research a topic.
-homepage: https://github.com/google-ai-edge/gallery/discussions/categories/skills
+description: Search the web privately using a self-hosted SearXNG instance. Fetches and reads the full content of the top results and summarizes them. Use when the user asks to search the web, look something up online, find current information, or research any topic.
 ---
 
-# Privacy Web Search (SearXNG)
+# Privacy Web Search (Self-hosted SearXNG)
 
 ## Overview
-This skill lets you search the web privately via SearXNG — a free, open-source meta-search engine that queries multiple sources (Google, Bing, DuckDuckGo, etc.) simultaneously without tracking users or storing search logs. It is the privacy-respecting alternative to using a Google or Bing API directly.
+This skill searches the web privately via a self-hosted SearXNG instance, fetches the full content of the top results, and returns the text for you to summarize. No tracking, no third-party services.
 
 ## When to activate
-Activate this skill when the user asks to:
+Activate when the user asks to:
 - Search the web or internet for anything
-- Look up current news, events, prices, or facts
-- Find information that may be newer than your training data
+- Look up current news, events, or facts
 - Research a topic online
+- Find information that may be newer than your training data
 
 ## How to use
 
-When this skill is relevant, call the `run_js` tool using `index.html` with a JSON string for `data` containing these fields:
+Call `run_js` with `index.html` and a JSON string containing:
 
-- `query`: Required. The search query string. Extract the core search intent from the user's message. Keep it concise and specific (e.g. "Sydney weather today", "best budget phone 2026").
-- `num_results`: Optional. Number of results to return. Default is 5. Maximum is 10.
+- `query`: Required. The core search intent, concise and specific (e.g. "Sydney weather today", "best budget phone 2026")
+- `num_results`: Optional. Number of results to fetch and read. Default 5, max 5.
 
-### Example tool call
+### Example
 ```json
 {
-  "query": "latest developments in fusion energy 2026",
+  "query": "fusion energy breakthroughs 2026",
   "num_results": 5
 }
 ```
 
 ## Handling results
 
-The tool returns a JSON object with either:
-
-**Success:**
-```json
-{
-  "result": {
-    "query": "the search query used",
-    "results": [
-      {
-        "title": "Result title",
-        "url": "https://example.com/page",
-        "snippet": "A short description of the result..."
-      }
-    ],
-    "source": "SearXNG (privacy-preserving meta-search)"
-  }
-}
-```
-
-**Error:**
-```json
-{
-  "error": "Description of what went wrong"
-}
-```
+The tool returns a JSON object with a `result` field containing:
+- `query`: the search query used
+- `results`: array of objects, each with `title`, `url`, `snippet`, and `full_text`
+- `source`: the search source used
+- `instruction`: reminder to summarize
 
 ## After receiving results
 
-1. Summarise the most relevant results in 2-4 sentences addressing the user's question directly.
-2. List the top results with their titles and URLs so the user can explore further.
-3. Note if results seem outdated or if the query should be refined.
-4. Keep your response concise — the on-device context window is limited.
-5. Always end with a complete sentence.
+1. Read the `full_text` field of each result carefully
+2. Write a clear, coherent summary of **3-5 sentences** that directly answers the user's query
+3. Highlight the most important and consistent findings across sources
+4. Note any conflicting information between sources if relevant
+5. End with a **Sources** list: each result's title and URL on its own line
+6. If `full_text` says "(Could not fetch page content)" for a result, rely on its `snippet` instead
+7. Keep the total response concise — the on-device context window is limited
 
 ## Important notes
-- Results come from multiple search engines simultaneously via SearXNG's public instance
-- No API key is required — this is fully free and privacy-preserving
-- If the public SearXNG instance is rate-limited or unavailable, inform the user and suggest trying again shortly
-- Do not fabricate results — only report what the tool returns
+- Never fabricate information — only summarize what the results contain
+- If results seem outdated or off-topic, say so and suggest refining the query
+- Some pages may block fetching — use the snippet as fallback for those
