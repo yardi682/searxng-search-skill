@@ -8,46 +8,13 @@
 <script>
   /**
    * Privacy Web Search Skill for Google AI Edge Gallery
-   * 1. Queries your self-hosted SearXNG for top results
-   * 2. Fetches the full content of each result page
-   * 3. Strips HTML down to clean readable text
-   * 4. Returns titles, URLs, and full text for the model to summarize
+   * 1. Queries self-hosted SearXNG for top results
+   * 2. Fetches full page content via self-hosted proxy (no CORS issues)
+   * 3. Returns clean text for the model to summarize
    */
 
   const SEARXNG_URL = "https://my-searxng-pohz.onrender.com";
-
-  // Strip HTML tags and collapse whitespace into clean readable text
-  function extractText(html) {
-    // Remove scripts, styles, nav, footer, header, ads
-    html = html.replace(/<(script|style|nav|footer|header|aside|noscript|iframe)[^>]*>[\s\S]*?<\/\1>/gi, " ");
-    // Remove all remaining tags
-    html = html.replace(/<[^>]+>/g, " ");
-    // Decode common HTML entities
-    html = html.replace(/&nbsp;/g, " ")
-               .replace(/&amp;/g, "&")
-               .replace(/&lt;/g, "<")
-               .replace(/&gt;/g, ">")
-               .replace(/&quot;/g, '"')
-               .replace(/&#39;/g, "'");
-    // Collapse whitespace
-    html = html.replace(/\s+/g, " ").trim();
-    // Return first 1500 chars — enough context without overloading the model
-    return html.slice(0, 1500);
-  }
-
-  async function fetchPageContent(url) {
-    try {
-      const res = await fetch(url, {
-        signal: AbortSignal.timeout(8000),
-        headers: { "Accept": "text/html" }
-      });
-      if (!res.ok) return null;
-      const html = await res.text();
-      return extractText(html);
-    } catch (e) {
-      return null;
-    }
-  }
+  const PROXY_URL   = "https://YOUR-PROXY-APP.onrender.com";
 
   window.ai_edge_gallery_get_result = async function(dataString) {
     try {
@@ -74,7 +41,7 @@
           headers: { "Accept": "application/json" }
         });
         if (!res.ok) {
-          return JSON.stringify({ error: "SearXNG returned HTTP " + res.status + ". Is the server running?" });
+          return JSON.stringify({ error: "SearXNG returned HTTP " + res.status });
         }
         const data = await res.json();
         if (!data.results || data.results.length === 0) {
@@ -85,15 +52,27 @@
         return JSON.stringify({ error: "Could not reach SearXNG: " + e.message });
       }
 
-      // Step 2: Fetch full content of each result page in parallel
+      // Step 2: Fetch full content of each page via proxy (parallel)
       const enriched = await Promise.all(
         searchResults.map(async (r) => {
-          const fullText = await fetchPageContent(r.url);
+          let fullText = "(Could not fetch page content)";
+          try {
+            const proxyRes = await fetch(
+              PROXY_URL + "/fetch?url=" + encodeURIComponent(r.url),
+              { signal: AbortSignal.timeout(10000) }
+            );
+            if (proxyRes.ok) {
+              const data = await proxyRes.json();
+              if (data.text) fullText = data.text;
+            }
+          } catch (e) {
+            // Fall back to snippet
+          }
           return {
             title: (r.title || "").trim(),
             url: r.url || "",
             snippet: (r.content || r.description || "").trim().slice(0, 300),
-            full_text: fullText || "(Could not fetch page content)"
+            full_text: fullText
           };
         })
       );
@@ -103,7 +82,7 @@
           query: query,
           results: enriched,
           source: "SearXNG (self-hosted, private)",
-          instruction: "Please summarize the key findings from these search results. For each result, read the full_text field. Write a coherent summary of 3-5 sentences answering the user's query, then list the sources."
+          instruction: "Read the full_text of each result. Write a 3-5 sentence summary answering the user's query, then list sources as title + URL."
         }
       });
 
